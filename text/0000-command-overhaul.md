@@ -15,22 +15,25 @@ The principal changes proposed are:
  3. Provide `.ok()` to turn `ExitStatus` into a `std::result::Result` and `impl std::error::Error` for `process::ExitStatus`. [2021]
  4. Change the return value of `Command::output` to a suitable `Result` type which can represent failure wait status, stderr output, or both. [2021]
 
+No new functionality is proposed, only API changes to make the existing functionality less error-prone and more ergonomic.
+
 
 # Motivation (overall)
 [motivation]: #motivation
 
 Currently, correct use of `Command` involves a lot of tiresome boilerplate to deal with `ExitStatus` and so on.  The compiler fails to spot many obvious programming mistakes, including failing to check the subprocess's exit status.
 
-There are a number of distinct but interlocking problems.  It seems convenient to me to deal with them in a single RFC, but there is a separate instance of the RFC template questions for each.
+Running subprocesses is inherently complex, and provides many opportunites for errors to occur - so there are some questions about how to best represent this complexity in a convenient API.
 
-Running subprocesses is complex, and provides many opportunites for errors to occur, so there are some questions about how to best represent this complexity in a convenient API.
+Because of the need to make incompatible changes, and the complexity of the process handling problem space and the resulting questions about what our API should look like, an RFC is appropriate.
 
+There are a number of distinct but interlocking problems, many tracked at [rust-lang/rust#73131](https://github.com/rust-lang/rust/issues/73131).  It seems convenient to deal with them in a single RFC, but there is a separate instance of the RFC template questions for each:
 
 # 1. Diagnose failure to run, or wait, or check exit status
 
 ## Motivation
 
-The following incorrect program fragments are all accepted today and run to completion returning an error:
+The following incorrect program fragments are all accepted today and run to completion without returning any error:
 
 ```
     Command::new("touch")
@@ -68,9 +71,12 @@ We could invent an alternative less error-prone API which still gives the same l
 
 Making this change only in the 2021 edition will not help fix existing programs in the ecosystem which have these error handling bugs.  We could make the breaking change immediately.  But that doesn't seem very friendly.
 
-## Prior art
+## Prior art and references
 
 Many existing types are `#[must_use]`.  This is generally true of builder types and of types representing possible errors.  For another example, consider futures, which only do anything if you await them.
+
+Two of these changes were requested (one by the author of this RFC) in [rust-lang/rust#70186](https://github.com/rust-lang/rust/issues/70186)
+[rust-lang/rust#73127](https://github.com/rust-lang/rust/issues/73127).
 
 ## Unresolved questions
 
@@ -115,7 +121,10 @@ Provide a new method on `Command`, called `run`, which runs the command, and ret
     struct CommandErrorImpl { status: ExitStatus, stderr: Vec<u8>, }
     pub struct CommandError(Box<CommandErrorImpl>);
     impl CommandError {
-        /// For callers who want to tolerate some exit statuses, but still fail if there was stderr output.  Eg, someone running `diff`.
+        /// Returns `Ok<ExitStatus>` if the only reason for the failure was a nonzero exit status.  Otherwise returns `self`.
+        ////
+        /// Use this in prefernce to `get_status` if you want to to tolerate some exit statuses, but still fail if there was stderr output.
+        /// Eg, someone running `diff`.
         pub fn just_status(self) -> Result<ExitStatus, CommandError> {
             if self.stderr_bytes().is_mepty() { Ok(self.status) }
             else { Err(self) }
@@ -133,14 +142,6 @@ The nested `Result` is unusual.
 
 The `CommandError` type is rather complicated.
 
-## Prior art
-
-In modern Python 3 the recommended way to run a process is a `run` function which can capture the stderr (and stdout) output, but does not do so by default.
-
-tcl's `exec` proc treats stderr output as an error, unless it is explictly dealt with another way.
-
-Nested `Result` types occur occasionally in Rust code especially when doing complex things.
-
 ## Rationale and alternatives
 
 `run` seems an obviously useful convenience.  It should be the usual way to run a synchronous subprocess.  The error return from `run` must be able to contain the exit status and the stderr output; or it might be just an `io::Error` if things went badly wrong.
@@ -153,6 +154,14 @@ My view is that failures within our process, of system calls we are using to do 
 `stderr` providing the result of `from_*_lossy` is needed because the format (`*`) is not known by the programmer writing portable code.  On Unix it is UTF-8.  On Windows, I believe it is UTF-16 at least some of the time.
 
 The dichotomy between `just_status` and `get_status` is to make it hard to accidentally forget to check for stderr output while checking for an expectected nonzero exit status.  Perhaps this is overkill, in which case just `status` might do.
+
+## Prior art
+
+In modern Python 3 the recommended way to run a process is a `run` function which can capture the stderr (and stdout) output, but does not do so by default.
+
+tcl's `exec` proc treats stderr output as an error, unless it is explictly dealt with another way.
+
+Nested `Result` types occur occasionally in Rust code especially when doing complex things.
 
 ## Unresolved questions
 
@@ -201,19 +210,19 @@ Instead we would like to be able to write something shorter, e.g.:
     }
 ```
 
-The new trait impl would have to be in the 2021 edition and that really means that the `ok` method has to as well.
+The new trait impl would probably have to be in the 2021 edition (since it's a very common type and this would perhaps be an inference break) and that really means that the `ok` method has to as well.
 
 ## Drawbacks
 
 It is unusual to have an `Error` which might represent some kind of success code.  However, this is appropriate: sometimes a program is expected to give a particular nonzero exit status and unexpectedly exits 0; in which case being able to use the `ExitStatus` as an error directly is convenient.
-
-One obvious alternative would be to introduce a new `ExitStatusError` type which would be a newtype for `ExitStatus` (maybe only for nonzero ones).
 
 ## Rationale and alternatives
 
 The `ok` method for converting `ExitStatus` into a `Result` is obviously convenient.
 
 If you have determined that things are wrong you can `fehler::throw!` (or `return Err()`) an `ExitStatus` directly.
+
+One obvious alternative to having `ExitStatus` be an error itself would be to introduce a new `ExitStatusError` type which would be a newtype for `ExitStatus` (maybe only for nonzero ones).
 
 ## Prior art
 
@@ -228,13 +237,13 @@ I'm not aware of prior art for `fn ok(self: Thing) -> Result<(),Thing>`.
 
 `std::process::Output` is an accident waiting to happen.  It is a transparent struct which combines desired output with error information in a way that requires programme/reviewer vigilance to see that all the fields are checked.
 
-Worse, the fact that it returns a `Result` makes it seem like
+Worse, the fact that `.output()` returns a `Result` gives the impression that errors have already been checked and converted to an appropriate `Err`.
 
 Actually doing things right is quite hard work.
 
 Today, this is accepted:
 
-``
+```
     let output = Command::new("ls")
         .arg("/dev/enoent/ls-1")
         .output()?;
@@ -268,11 +277,13 @@ The minimally correct version looks something like this:
 
 ## Proposed change
 
+Abolish `std::process::Output` and change the return type of `.output()`:
+
 ```
     impl Command {
         /// Like run() but stdout is piped and returned.
         /// Replaces old `.command()` method from 2021 ed. onwards
-        pub fn output() -> Result<Result<Vec<u8>, CommandError>> { ... }
+        pub fn output() -> Result<Result<Vec<u8>, CommandError>, io::Error> { ... }
 
     // add a field to CommandError:
     struct CommandErrorImpl { status: ExitStatus, stdout: Vec<u8>, stderr: Vec<u8>, }
@@ -293,8 +304,12 @@ entangle the returned data with the error using `Result`.  If the nested `Result
 
 The user may want to get the stdout output even if there is an error, so the relevant error variant must contain the stdout.  Rather than making a new error type, adding a field to `CommandError` seems appropriate.
 
+The combination of `.status()`, `.run()` and `.output()` effectively encode, in the choice of which method is called, the decision about whether to buffering or capture stderr and/or stdout.  An alternative would be to provide something like `stdio::captured()`, but that would complicates the API of `Child` considerably.
 
-# Prior art in the Rust ecosystem
+With the `.run()` and `.output()` API proposed here, it is complex to treat only certain stderr output as an error: one has to examine the `CommandError` in detail.  I think that is more appropriate than the flat approach of the existing `process::Output`.
+
+
+# Prior art for `Command` affordances/improvements, in the Rust ecosystem
 
 I searched crates.io for `Command` and looked for crates providing extra facilities, or replacements for, `Command`.
 
@@ -303,3 +318,10 @@ I found only two: `command-run` and `execute`.
 `command-run` seems to be aimed at some of the problems I discuss here.  It too has a `run()` method which checks the exit status and a different API for collecting output.  It does not provide a facility for treating stderr output as an error.
 
 `execute` seems mostly focused on pipe plumbing and offers very little assistance to help the programmer avoid error halnding bugs.
+
+
+# Future possibilities
+
+This proposal is intended to make the `Command` API workable, ergonomic, self-contained and yet flexible.
+
+More sophisticated tasks, like setting up process pipelines, are probably best left to the crate ecosystem for the foreseeable future.
