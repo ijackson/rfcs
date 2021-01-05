@@ -15,7 +15,7 @@ The principal changes proposed are:
  3. Provide `.ok()` to turn `ExitStatus` into a `std::result::Result` and `impl std::error::Error` for `process::ExitStatus`. [2021]
  4. Change the return value of `Command::output` to a suitable `Result` type which can represent failure wait status, stderr output, or both. [2021]
 
-No new functionality is proposed, only API changes to make the existing functionality less error-prone and more ergonomic.
+No new functionality is proposed, nor any removals of functionality - just API changes to make the existing functionality less error-prone and more ergonomic.
 
 
 # Motivation (overall)
@@ -57,7 +57,7 @@ The following incorrect program fragments are all accepted today and run to comp
 
 The compiler will report accidental failure to: actually run the command; wait for it to complete; or to check its exit status.
 
-`std::process::Command`, `std::process::Child` and `std::process::ExitStatus` will all be marked with `#[must_use]`.
+This will be done by adding `#[must_use]` to `std::process::Command`, `std::process::Child` and `std::process::ExitStatus`.
 
 This is not a compatible change.  It will be done in the 2021 edition.
 
@@ -304,7 +304,7 @@ entangle the returned data with the error using `Result`.  If the nested `Result
 
 The user may want to get the stdout output even if there is an error, so the relevant error variant must contain the stdout.  Rather than making a new error type, adding a field to `CommandError` seems appropriate.
 
-The combination of `.status()`, `.run()` and `.output()` effectively encode, in the choice of which method is called, the decision about whether to buffering or capture stderr and/or stdout.  An alternative would be to provide something like `stdio::captured()`, but that would complicates the API of `Child` considerably.
+The combination of `.status()`, `.run()` and `.output()` effectively encode, in the choice of which method is called, the decision about whether to buffer and capture stderr and/or stdout.  An alternative would be to provide something like `stdio::captured()`, but that would complicates the API of `Child` considerably.
 
 With the `.run()` and `.output()` API proposed here, it is complex to treat only certain stderr output as an error: one has to examine the `CommandError` in detail.  I think that is more appropriate than the flat approach of the existing `process::Output`.
 
@@ -315,9 +315,9 @@ I searched crates.io for `Command` and looked for crates providing extra facilit
 
 I found only two: `command-run` and `execute`.
 
-`command-run` seems to be aimed at some of the problems I discuss here.  It too has a `run()` method which checks the exit status and a different API for collecting output.  It does not provide a facility for treating stderr output as an error.
+[command-run](https://docs.rs/command-run/0.13.0/command_run/) seems to be aimed at some of the problems I discuss here.  It too has a `run()` method which checks the exit status and a different API for collecting output.  It does not provide a facility for treating stderr output as an error.
 
-`execute` seems mostly focused on pipe plumbing and offers very little assistance to help the programmer avoid error halnding bugs.
+[execute](https://docs.rs/execute/0.2.8/execute/) seems mostly focused on pipe plumbing and offers very little assistance to help the programmer avoid error halnding bugs.
 
 
 # Future possibilities
